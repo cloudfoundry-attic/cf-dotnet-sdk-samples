@@ -1,5 +1,6 @@
 ﻿using CloudFoundry.CloudController.V2;
 using CloudFoundry.CloudController.V2.Client.Data;
+using CloudFoundry.Logyard.Client;
 using CloudFoundry.UAA;
 using PowerArgs;
 using System;
@@ -8,6 +9,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace cfcmd
@@ -40,7 +42,8 @@ namespace cfcmd
                 {
                     new ConsoleString(string.Format("{0}", app.Name), ConsoleColor.Green).WriteLine();
                     new ConsoleString(string.Format("Memory: {0}", app.Memory), ConsoleColor.White).WriteLine();
-                    new ConsoleString(string.Format("Buildpack: {0}", app.Buildpack ?? string.Empty), ConsoleColor.White).WriteLine();
+                    new ConsoleString(string.Format("Buildpack: {0}", app.Buildpack ?? app.DetectedBuildpack ?? "n/a"), ConsoleColor.White).WriteLine();
+                    new ConsoleString(string.Format("Instances: {0}", app.Instances), ConsoleColor.White).WriteLine();
                     new ConsoleString("------------------", ConsoleColor.Gray).WriteLine();
                 }
 
@@ -68,14 +71,128 @@ namespace cfcmd
             }
         }
 
-        [ArgActionMethod, ArgDescription("Deletes an application")]
-        public void DeleteApp(string app, string space)
+        [ArgActionMethod, ArgDescription("Push the current directory to the cloud")]
+        public void Push(PushArgs pushArgs)
         {
             SetTargetInfoFromFile();
+
+            if (!Directory.Exists(pushArgs.Dir))
+            {
+                throw new DirectoryNotFoundException(string.Format("Directory '{0}' not found", pushArgs.Dir));
+            }
+
+            CloudFoundryClient client = new CloudFoundryClient(new Uri(this.api), new System.Threading.CancellationToken());
+            client.Login(this.token).Wait();
+
+            // ======= GRAB FIRST SPACE AVAILABLE =======
+
+            new ConsoleString("Looking up spaces ...", ConsoleColor.Cyan).WriteLine();
+
+            PagedResponseCollection<ListAllSpacesResponse> spaces = client.Spaces.ListAllSpaces().Result;
+
+            if (spaces.Count() == 0)
+            {
+                throw new InvalidOperationException("Couldn't find any spaces");
+            }
+
+            ListAllSpacesResponse space = spaces.First();
+
+            new ConsoleString(string.Format("Will be using space {0}", space.Name), ConsoleColor.Green).WriteLine();
+
+            // ======= CREATE AN APPLICATION =======
+
+            new ConsoleString("Creating app ...", ConsoleColor.Cyan).WriteLine();
+
+
+            PagedResponseCollection<ListAllStacksResponse> stacks = client.Stacks.ListAllStacks(new RequestOptions()
+            {
+                Query = string.Format("name:{0}", pushArgs.Stack)
+            }).Result;
+
+            if (stacks.Count() == 0)
+            {
+                throw new InvalidOperationException(string.Format("Couldn't find the stack {0}", pushArgs.Stack));
+            }
+
+            CreateAppRequest createAppRequest = new CreateAppRequest()
+            {
+                Name = pushArgs.Name,
+                Memory = pushArgs.Memory,
+                StackGuid = new Guid(stacks.First().EntityMetadata.Guid),
+                SpaceGuid = new Guid(space.EntityMetadata.Guid)
+            };
+
+            CreateAppResponse appCreateResponse = client.Apps.CreateApp(createAppRequest).Result;
+
+            new ConsoleString(string.Format("Created app with guid '{0}'", appCreateResponse.EntityMetadata.Guid), ConsoleColor.Green).WriteLine();
+
+            // ======= CREATE A ROUTE =======
+
+            new ConsoleString("Creating a route ...", ConsoleColor.Cyan).WriteLine();
+
+            PagedResponseCollection<ListAllSharedDomainsResponse> allDomains = client.SharedDomains.ListAllSharedDomains().Result;
+
+            if (allDomains.Count() == 0)
+            {
+                throw new InvalidOperationException("Could not find any shared domains");
+            }
+
+            string url = string.Format("{0}.{1}", pushArgs.Name, allDomains.First().Name);
+
+            CreateRouteResponse createRouteResponse = client.Routes.CreateRoute(new CreateRouteRequest()
+            {
+                DomainGuid = new Guid(allDomains.First().EntityMetadata.Guid),
+                Host = pushArgs.Name,
+                SpaceGuid = new Guid(space.EntityMetadata.Guid)
+            }).Result;
+
+            new ConsoleString(string.Format("Created route '{0}.{1}'", pushArgs.Name, allDomains.First().Name), ConsoleColor.Green).WriteLine();
+
+            // ======= BIND THE ROUTE =======
+
+            new ConsoleString("Associating the route ...", ConsoleColor.Cyan).WriteLine();
+
+            client.Routes.AssociateAppWithRoute(
+                new Guid(createRouteResponse.EntityMetadata.Guid),
+                new Guid(appCreateResponse.EntityMetadata.Guid)).Wait();
+
+            // ======= HOOKUP LOGGING =======
+            // TODO: detect logyard vs loggregator
+
+            GetV1InfoResponse v1Info = client.Info.GetV1Info().Result;
+            LogyardLog logyard = new LogyardLog(new Uri(v1Info.AppLogEndpoint), client.AuthorizationToken);
+
+            logyard.ErrorReceived += (sender, error) =>
+            {
+                Program.PrintExceptionMessage(error.Error);
+            };
+
+            logyard.MessageReceived += (sender, message) =>
+            {
+                new ConsoleString(
+                    string.Format("[{0}] - {1}: {2}",
+                    message.Message.Value.Source,
+                    message.Message.Value.HumanTime,
+                    message.Message.Value.Text), 
+                    ConsoleColor.White).WriteLine();
+            };
+
+
+            // ======= PUSH THE APP =======
+            new ConsoleString("Pushing the app ...", ConsoleColor.Cyan).WriteLine();
+            client.Apps.PushProgress += (sender, progress) =>
+            {
+                new ConsoleString(string.Format("Push at {0}%", progress.Percent), ConsoleColor.Yellow).WriteLine();
+                new ConsoleString(string.Format("{0}", progress.Message), ConsoleColor.DarkYellow).WriteLine();
+            };
+
+            client.Apps.Push(new Guid(appCreateResponse.EntityMetadata.Guid), pushArgs.Dir, true).Wait();
+
+            new ConsoleString("Done.", ConsoleColor.Green).WriteLine();
         }
 
-        [ArgActionMethod, ArgDescription("Push an application to the cloud")]
-        public void Push(string path, string stack)
+        [ArgActionMethod, ArgDescription("Deletes an application")]
+        public void DeleteApp(string app, string space)
         {
             SetTargetInfoFromFile();
         }
@@ -106,7 +223,7 @@ namespace cfcmd
 
 
             CloudFoundryClient client = new CloudFoundryClient(new Uri(loginArgs.Api), new System.Threading.CancellationToken());
-            
+
             SaveTokenFile(
                 loginArgs.Api,
                 client.Login(credentials).Result,
@@ -148,12 +265,12 @@ namespace cfcmd
 
     public class LoginArgs
     {
-        [ArgShortcut("--api"), ArgShortcut("-a"), ArgDescription("Target API"), ArgRequired(PromptIfMissing=true)]
+        [ArgShortcut("--api"), ArgShortcut("-a"), ArgDescription("Target API"), ArgRequired(PromptIfMissing = true)]
         public string Api { get; set; }
 
         [ArgShortcut("--user"), ArgShortcut("-u"), ArgDescription("CloudFoundry Username"), ArgRequired(PromptIfMissing = true)]
         public string User { get; set; }
-        
+
         [ArgShortcut("--pass"), ArgShortcut("-p"), ArgDescription("CloudFoundry Password")]
         public SecureStringArgument Password { get; set; }
 
@@ -161,10 +278,24 @@ namespace cfcmd
         public bool SkipSSL { get; set; }
     }
 
+    public class PushArgs
+    {
+        [ArgShortcut("--name"), ArgShortcut("-n"), ArgDescription("Name of app"), ArgRequired(PromptIfMissing = true)]
+        public string Name { get; set; }
+
+        [ArgShortcut("--memory"), ArgShortcut("-m"), ArgDescription("Amount of memory to allocate"), ArgRequired(PromptIfMissing = true)]
+        public int Memory { get; set; }
+
+        [ArgShortcut("--stack"), ArgShortcut("-s"), ArgDescription("Stack to use"), ArgRequired(PromptIfMissing = true)]
+        public string Stack { get; set; }
+
+        [ArgShortcut("--dir"), ArgShortcut("-d"), ArgDescription("Directory you want to push"), ArgRequired(PromptIfMissing = true)]
+        public string Dir { get; set; }
+    }
 
     class Program
     {
-        static void PrintExceptionMessage(Exception ex)
+        internal static void PrintExceptionMessage(Exception ex)
         {
             if (ex is AggregateException)
             {
