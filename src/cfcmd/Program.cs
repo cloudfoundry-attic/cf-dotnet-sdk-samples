@@ -30,10 +30,7 @@ namespace cfcmd
         [ArgActionMethod, ArgDescription("List all applications")]
         public void Apps()
         {
-            SetTargetInfoFromFile();
-
-            CloudFoundryClient client = new CloudFoundryClient(new Uri(this.api), new System.Threading.CancellationToken());
-            client.Login(this.token).Wait();
+            CloudFoundryClient client = SetTargetInfoFromFile();
 
             PagedResponseCollection<ListAllAppsResponse> apps = client.Apps.ListAllApps().Result;
             while (apps != null && apps.Properties.TotalResults != 0)
@@ -54,10 +51,7 @@ namespace cfcmd
         [ArgActionMethod, ArgDescription("List all stacks")]
         public void Stacks()
         {
-            SetTargetInfoFromFile();
-
-            CloudFoundryClient client = new CloudFoundryClient(new Uri(this.api), new System.Threading.CancellationToken());
-            client.Login(this.token).Wait();
+            CloudFoundryClient client = SetTargetInfoFromFile();
 
             PagedResponseCollection<ListAllStacksResponse> stacks = client.Stacks.ListAllStacks().Result;
             while (stacks != null && stacks.Properties.TotalResults != 0)
@@ -74,15 +68,12 @@ namespace cfcmd
         [ArgActionMethod, ArgDescription("Push the current directory to the cloud")]
         public void Push(PushArgs pushArgs)
         {
-            SetTargetInfoFromFile();
-
             if (!Directory.Exists(pushArgs.Dir))
             {
                 throw new DirectoryNotFoundException(string.Format("Directory '{0}' not found", pushArgs.Dir));
             }
 
-            CloudFoundryClient client = new CloudFoundryClient(new Uri(this.api), new System.Threading.CancellationToken());
-            client.Login(this.token).Wait();
+            CloudFoundryClient client = SetTargetInfoFromFile();
 
             // ======= GRAB FIRST SPACE AVAILABLE =======
 
@@ -188,7 +179,35 @@ namespace cfcmd
 
             client.Apps.Push(new Guid(appCreateResponse.EntityMetadata.Guid), pushArgs.Dir, true).Wait();
 
-            new ConsoleString("Done.", ConsoleColor.Green).WriteLine();
+            // ======= WAIT FOR APP TO COME ONLINE =======
+            bool done = false;
+            while (true)
+            {
+                GetAppSummaryResponse appSummary = client.Apps.GetAppSummary(new Guid(appCreateResponse.EntityMetadata.Guid)).Result;
+
+                if (appSummary.RunningInstances > 0)
+                {
+                    break;
+                }
+
+                if (appSummary.PackageState == "FAILED")
+                {
+                    throw new Exception("App staging failed.");
+                }
+                else if (appSummary.PackageState == "PENDING")
+                {
+                    new ConsoleString("[cfcmd] - App is staging ...", ConsoleColor.Magenta).WriteLine();
+                }
+                else if (appSummary.PackageState == "STAGED")
+                {
+                    new ConsoleString("[cfcmd] - App staged, waiting for it to come online ...", ConsoleColor.Magenta).WriteLine();
+                }
+
+                Thread.Sleep(2000);
+            }
+
+
+            new ConsoleString(string.Format("App is running, done. You can browse it here: http://{0}.{1}", pushArgs.Name, allDomains.First().Name) , ConsoleColor.Green).WriteLine();
         }
 
         [ArgActionMethod, ArgDescription("Deletes an application")]
@@ -241,7 +260,7 @@ namespace cfcmd
             File.WriteAllLines(TOKEN_FILE, tokenFile);
         }
 
-        private void SetTargetInfoFromFile()
+        private CloudFoundryClient SetTargetInfoFromFile()
         {
             if (!File.Exists(TOKEN_FILE))
             {
@@ -259,8 +278,16 @@ namespace cfcmd
                 new ConsoleString("Ignoring SSL errors.", ConsoleColor.Yellow).WriteLine();
                 System.Net.ServicePointManager.ServerCertificateValidationCallback = ((sender, certificate, chain, sslPolicyErrors) => true);
             }
-        }
 
+            new ConsoleString(string.Format("Logging in to target {0} ...", this.api), ConsoleColor.Magenta).WriteLine();
+
+            CloudFoundryClient client = new CloudFoundryClient(new Uri(this.api), new System.Threading.CancellationToken());
+            client.Login(this.token).Wait();
+
+            new ConsoleString(string.Format("Logged in.", this.api), ConsoleColor.Green).WriteLine();
+
+            return client;
+        }
     }
 
     public class LoginArgs

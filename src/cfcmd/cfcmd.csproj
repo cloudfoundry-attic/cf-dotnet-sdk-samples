@@ -34,32 +34,27 @@
     <WarningLevel>4</WarningLevel>
   </PropertyGroup>
   <ItemGroup>
-    <Reference Include="CloudFoundry.CloudController.Common, Version=1.0.0.112, Culture=neutral, processorArchitecture=MSIL">
-      <SpecificVersion>False</SpecificVersion>
-      <HintPath>..\..\packages\cf-dotnet-sdk.1.0.0.112\lib\Net45\CloudFoundry.CloudController.Common.dll</HintPath>
+    <Reference Include="CloudFoundry.CloudController.Common">
+      <HintPath>..\..\packages\cf-dotnet-sdk.1.0.0.125\lib\Net45\CloudFoundry.CloudController.Common.dll</HintPath>
     </Reference>
-    <Reference Include="CloudFoundry.CloudController.V2.Client, Version=1.0.0.112, Culture=neutral, processorArchitecture=MSIL">
-      <SpecificVersion>False</SpecificVersion>
-      <HintPath>..\..\packages\cf-dotnet-sdk.1.0.0.112\lib\Net45\CloudFoundry.CloudController.V2.Client.dll</HintPath>
+    <Reference Include="CloudFoundry.CloudController.V2.Client">
+      <HintPath>..\..\packages\cf-dotnet-sdk.1.0.0.125\lib\Net45\CloudFoundry.CloudController.V2.Client.dll</HintPath>
     </Reference>
-    <Reference Include="CloudFoundry.Loggregator.Client, Version=1.0.0.112, Culture=neutral, processorArchitecture=MSIL">
-      <SpecificVersion>False</SpecificVersion>
-      <HintPath>..\..\packages\cf-dotnet-sdk.1.0.0.112\lib\Net45\CloudFoundry.Loggregator.Client.dll</HintPath>
+    <Reference Include="CloudFoundry.Loggregator.Client">
+      <HintPath>..\..\packages\cf-dotnet-sdk.1.0.0.125\lib\Net45\CloudFoundry.Loggregator.Client.dll</HintPath>
     </Reference>
-    <Reference Include="CloudFoundry.Logyard.Client, Version=1.0.0.112, Culture=neutral, processorArchitecture=MSIL">
-      <SpecificVersion>False</SpecificVersion>
-      <HintPath>..\..\packages\cf-dotnet-sdk.1.0.0.112\lib\Net45\CloudFoundry.Logyard.Client.dll</HintPath>
+    <Reference Include="CloudFoundry.Logyard.Client">
+      <HintPath>..\..\packages\cf-dotnet-sdk.1.0.0.125\lib\Net45\CloudFoundry.Logyard.Client.dll</HintPath>
     </Reference>
-    <Reference Include="CloudFoundry.UAA.Client, Version=1.0.0.112, Culture=neutral, processorArchitecture=MSIL">
-      <SpecificVersion>False</SpecificVersion>
-      <HintPath>..\..\packages\cf-dotnet-sdk.1.0.0.112\lib\Net45\CloudFoundry.UAA.Client.dll</HintPath>
+    <Reference Include="CloudFoundry.UAA.Client">
+      <HintPath>..\..\packages\cf-dotnet-sdk.1.0.0.125\lib\Net45\CloudFoundry.UAA.Client.dll</HintPath>
     </Reference>
     <Reference Include="Newtonsoft.Json, Version=6.0.0.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed, processorArchitecture=MSIL">
       <SpecificVersion>False</SpecificVersion>
       <HintPath>..\..\packages\Newtonsoft.Json.6.0.5\lib\net45\Newtonsoft.Json.dll</HintPath>
     </Reference>
     <Reference Include="PowerArgs">
-      <HintPath>..\packages\PowerArgs.2.6.0.1\lib\net40\PowerArgs.dll</HintPath>
+      <HintPath>..\..\packages\PowerArgs.2.6.0.1\lib\net40\PowerArgs.dll</HintPath>
     </Reference>
     <Reference Include="protobuf-net, Version=2.0.0.668, Culture=neutral, PublicKeyToken=257b51d87d2e4d67, processorArchitecture=MSIL">
       <SpecificVersion>False</SpecificVersion>
@@ -98,6 +93,14 @@
   <ItemGroup>
     <None Include="App.config" />
     <None Include="packages.config" />
+    <None Include="website\web.config">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="website\index.html">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <Import Project="..\packages\Microsoft.Bcl.Build.1.0.14\tools\Microsoft.Bcl.Build.targets" Condition="Exists('..\packages\Microsoft.Bcl.Build.1.0.14\tools\Microsoft.Bcl.Build.targets')" />
