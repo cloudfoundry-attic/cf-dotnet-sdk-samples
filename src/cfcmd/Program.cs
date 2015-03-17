@@ -151,11 +151,21 @@ namespace cfcmd
             // TODO: detect logyard vs loggregator
 
             GetV1InfoResponse v1Info = client.Info.GetV1Info().Result;
-            LogyardLog logyard = new LogyardLog(new Uri(v1Info.AppLogEndpoint), client.AuthorizationToken);
+            LogyardLog logyard = new LogyardLog(new Uri(v1Info.AppLogEndpoint), string.Format("bearer {0}", client.AuthorizationToken));
 
             logyard.ErrorReceived += (sender, error) =>
             {
                 Program.PrintExceptionMessage(error.Error);
+            };
+
+            logyard.StreamOpened += (sender, args) =>
+            {
+                new ConsoleString("Log stream opened.", ConsoleColor.Cyan).WriteLine();
+            };
+
+            logyard.StreamClosed += (sender, args) =>
+            {
+                new ConsoleString("Log stream closed.", ConsoleColor.Cyan).WriteLine();
             };
 
             logyard.MessageReceived += (sender, message) =>
@@ -168,6 +178,7 @@ namespace cfcmd
                     ConsoleColor.White).WriteLine();
             };
 
+            logyard.StartLogStream(appCreateResponse.EntityMetadata.Guid, 0, true);
 
             // ======= PUSH THE APP =======
             new ConsoleString("Pushing the app ...", ConsoleColor.Cyan).WriteLine();
@@ -206,14 +217,30 @@ namespace cfcmd
                 Thread.Sleep(2000);
             }
 
+            logyard.StopLogStream();
 
             new ConsoleString(string.Format("App is running, done. You can browse it here: http://{0}.{1}", pushArgs.Name, allDomains.First().Name) , ConsoleColor.Green).WriteLine();
         }
 
         [ArgActionMethod, ArgDescription("Deletes an application")]
-        public void DeleteApp(string app, string space)
+        public void DeleteApp(DeleteArgs deleteArgs)
         {
-            SetTargetInfoFromFile();
+            CloudFoundryClient client = SetTargetInfoFromFile();
+
+            PagedResponseCollection<ListAllAppsResponse> apps = client.Apps.ListAllApps(new RequestOptions()
+            {
+                Query = string.Format("name:{0}", deleteArgs.Name)
+            }).Result;
+
+
+            if (apps.Count() == 0)
+            {
+                throw new InvalidOperationException(string.Format("Couldn't find an app with name {0}", deleteArgs.Name));
+            }
+
+            client.Apps.DeleteApp(new Guid(apps.First().EntityMetadata.Guid)).Wait();
+
+            new ConsoleString(string.Format("Deleted app with id {0}", apps.First().EntityMetadata.Guid), ConsoleColor.Green).WriteLine();
         }
 
         [ArgActionMethod, ArgDescription("Login to a CloudFoundry target and save a .cf_token file in the current directory")]
@@ -303,6 +330,12 @@ namespace cfcmd
 
         [ArgShortcut("--skip-ssl"), ArgShortcut("-x"), ArgDescription("Skip ssl validation")]
         public bool SkipSSL { get; set; }
+    }
+
+    public class DeleteArgs
+    {
+        [ArgShortcut("--name"), ArgShortcut("-n"), ArgDescription("Name of app"), ArgRequired(PromptIfMissing = true)]
+        public string Name { get; set; }
     }
 
     public class PushArgs
