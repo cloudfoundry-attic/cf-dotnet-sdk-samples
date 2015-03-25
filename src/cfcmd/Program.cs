@@ -1,4 +1,5 @@
 ﻿using CloudFoundry.CloudController.V2;
+using CloudFoundry.CloudController.V2.Client;
 using CloudFoundry.CloudController.V2.Client.Data;
 using CloudFoundry.Logyard.Client;
 using CloudFoundry.UAA;
@@ -207,11 +208,11 @@ namespace cfcmd
                 }
                 else if (appSummary.PackageState == "PENDING")
                 {
-                    new ConsoleString("[cfcmd] - App is staging ...", ConsoleColor.Magenta).WriteLine();
+                    new ConsoleString("[cfcmd] - App is staging ...", ConsoleColor.DarkCyan).WriteLine();
                 }
                 else if (appSummary.PackageState == "STAGED")
                 {
-                    new ConsoleString("[cfcmd] - App staged, waiting for it to come online ...", ConsoleColor.Magenta).WriteLine();
+                    new ConsoleString("[cfcmd] - App staged, waiting for it to come online ...", ConsoleColor.DarkCyan).WriteLine();
                 }
 
                 Thread.Sleep(2000);
@@ -265,7 +266,7 @@ namespace cfcmd
                 loginArgs.Api = "https://" + loginArgs.Api;
             }
 
-            new ConsoleString(string.Format("Connecting to {0} ...", loginArgs.Api), ConsoleColor.Magenta).WriteLine();
+            new ConsoleString(string.Format("Connecting to {0} ...", loginArgs.Api), ConsoleColor.DarkCyan).WriteLine();
 
 
             CloudFoundryClient client = new CloudFoundryClient(new Uri(loginArgs.Api), new System.Threading.CancellationToken());
@@ -306,7 +307,7 @@ namespace cfcmd
                 System.Net.ServicePointManager.ServerCertificateValidationCallback = ((sender, certificate, chain, sslPolicyErrors) => true);
             }
 
-            new ConsoleString(string.Format("Logging in to target {0} ...", this.api), ConsoleColor.Magenta).WriteLine();
+            new ConsoleString(string.Format("Logging in to target {0} ...", this.api), ConsoleColor.DarkCyan).WriteLine();
 
             CloudFoundryClient client = new CloudFoundryClient(new Uri(this.api), new System.Threading.CancellationToken());
             client.Login(this.token).Wait();
