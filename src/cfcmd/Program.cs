@@ -2,12 +2,13 @@
 using CloudFoundry.CloudController.V2.Client;
 using CloudFoundry.CloudController.V2.Client.Data;
 using CloudFoundry.Logyard.Client;
+using CloudFoundry.Manifests;
+using CloudFoundry.Manifests.Models;
 using CloudFoundry.UAA;
 using PowerArgs;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -70,119 +71,273 @@ namespace cfcmd
         [ArgActionMethod, ArgDescription("Push the current directory to the cloud")]
         public void Push(PushArgs pushArgs)
         {
-            if (!Directory.Exists(pushArgs.Dir))
+            List<Application> manifestApps = new List<Application>();
+            List<Application> apps = new List<Application>();
+
+            if(!pushArgs.NoManifest)
             {
-                throw new DirectoryNotFoundException(string.Format("Directory '{0}' not found", pushArgs.Dir));
-            }
-
-            CloudFoundryClient client = SetTargetInfoFromFile();
-
-            // ======= GRAB FIRST SPACE AVAILABLE =======
-
-            new ConsoleString("Looking up spaces ...", ConsoleColor.Cyan).WriteLine();
-
-            PagedResponseCollection<ListAllSpacesResponse> spaces = client.Spaces.ListAllSpaces().Result;
-
-            if (spaces.Count() == 0)
-            {
-                throw new InvalidOperationException("Couldn't find any spaces");
-            }
-
-            ListAllSpacesResponse space = spaces.First();
-
-            new ConsoleString(string.Format("Will be using space {0}", space.Name), ConsoleColor.Green).WriteLine();
-
-            // ======= CREATE AN APPLICATION =======
-
-            new ConsoleString("Creating app ...", ConsoleColor.Cyan).WriteLine();
-
-
-            PagedResponseCollection<ListAllStacksResponse> stacks = client.Stacks.ListAllStacks(new RequestOptions()
-            {
-                Query = string.Format("name:{0}", pushArgs.Stack)
-            }).Result;
-
-            if (stacks.Count() == 0)
-            {
-                throw new InvalidOperationException(string.Format("Couldn't find the stack {0}", pushArgs.Stack));
-            }
-
-            CreateAppRequest createAppRequest = new CreateAppRequest()
-            {
-                Name = pushArgs.Name,
-                Memory = pushArgs.Memory,
-                StackGuid = new Guid(stacks.First().EntityMetadata.Guid),
-                SpaceGuid = new Guid(space.EntityMetadata.Guid)
-            };
-
-            CreateAppResponse appCreateResponse = client.Apps.CreateApp(createAppRequest).Result;
-
-            new ConsoleString(string.Format("Created app with guid '{0}'", appCreateResponse.EntityMetadata.Guid), ConsoleColor.Green).WriteLine();
-
-            // ======= CREATE A ROUTE =======
-
-            new ConsoleString("Creating a route ...", ConsoleColor.Cyan).WriteLine();
-
-            PagedResponseCollection<ListAllSharedDomainsResponse> allDomains = client.SharedDomains.ListAllSharedDomains().Result;
-
-            if (allDomains.Count() == 0)
-            {
-                throw new InvalidOperationException("Could not find any shared domains");
-            }
-
-            string url = string.Format("{0}.{1}", pushArgs.Name, allDomains.First().Name);
-
-            CreateRouteResponse createRouteResponse = client.Routes.CreateRoute(new CreateRouteRequest()
-            {
-                DomainGuid = new Guid(allDomains.First().EntityMetadata.Guid),
-                Host = pushArgs.Name,
-                SpaceGuid = new Guid(space.EntityMetadata.Guid)
-            }).Result;
-
-            new ConsoleString(string.Format("Created route '{0}.{1}'", pushArgs.Name, allDomains.First().Name), ConsoleColor.Green).WriteLine();
-
-            // ======= BIND THE ROUTE =======
-
-            new ConsoleString("Associating the route ...", ConsoleColor.Cyan).WriteLine();
-
-            client.Routes.AssociateAppWithRoute(
-                new Guid(createRouteResponse.EntityMetadata.Guid),
-                new Guid(appCreateResponse.EntityMetadata.Guid)).Wait();
-
-            // ======= PUSH THE APP =======
-            new ConsoleString("Pushing the app ...", ConsoleColor.Cyan).WriteLine();
-            client.Apps.PushProgress += (sender, progress) =>
-            {
-                new ConsoleString(string.Format("Push at {0}%", progress.Percent), ConsoleColor.Yellow).WriteLine();
-                new ConsoleString(string.Format("{0}", progress.Message), ConsoleColor.DarkYellow).WriteLine();
-            };
-
-            client.Apps.Push(new Guid(appCreateResponse.EntityMetadata.Guid), pushArgs.Dir, true).Wait();
-
-            // ======= HOOKUP LOGGING AND MONITOR APP =======
-
-            GetV1InfoResponse v1Info = client.Info.GetV1Info().Result;
-
-            if (string.IsNullOrWhiteSpace(v1Info.AppLogEndpoint) == false)
-            {
-                this.GetLogsUsingLogyard(client, new Guid(appCreateResponse.EntityMetadata.Guid), v1Info);
-            }
-            else
-            {
-                GetInfoResponse detailedInfo = client.Info.GetInfo().Result;
-
-                if (string.IsNullOrWhiteSpace(detailedInfo.LoggingEndpoint) == false)
+                string path;
+                if(!string.IsNullOrWhiteSpace(pushArgs.Manifest))
                 {
-                    this.GetLogsUsingLoggregator(client, new Guid(appCreateResponse.EntityMetadata.Guid), detailedInfo);
+                    path = pushArgs.Manifest;
                 }
                 else
                 {
-                    throw new Exception("Could not retrieve application logs");
+                    path = Directory.GetCurrentDirectory();
+                }
+                try
+                {
+                    Manifest manifest = ManifestDiskRepository.ReadManifest(path);
+                    manifestApps.AddRange(manifest.Applications().ToList());
+                }
+                catch{
+                    if(!string.IsNullOrWhiteSpace(pushArgs.Manifest))
+                    {
+                        throw new FileNotFoundException("Error reading manifest file.");
+                    }
+                }
+                
+            }
+            if(manifestApps.Count == 0)
+            {
+                apps.Add(new Application()
+                {
+                    Name = pushArgs.Name,
+                    Memory = pushArgs.Memory,
+                    Path = pushArgs.Dir,
+                    StackName = pushArgs.Stack
+                });
+            }
+            else if (manifestApps.Count == 1)
+            {
+                Application app = manifestApps[0];
+                if(!string.IsNullOrWhiteSpace(pushArgs.Name))
+                    app.Name = pushArgs.Name;
+                if(pushArgs.Memory != 0)
+                    app.Memory = pushArgs.Memory;
+                if (!string.IsNullOrWhiteSpace(pushArgs.Stack))
+                    app.StackName = pushArgs.Stack;
+                if (!string.IsNullOrWhiteSpace(pushArgs.Dir))
+                    app.Path = pushArgs.Dir;
+                apps.Add(app);
+            }
+            else
+            {
+                if (!string.IsNullOrWhiteSpace(pushArgs.Name))
+                {
+                    Application app = manifestApps.FirstOrDefault(a => a.Name == pushArgs.Name);
+                    if (app == null)
+                    {
+                        throw new ArgumentException(string.Format("Could not find app named '{0}' in manifest", pushArgs.Name));
+                    }
+                    if (!string.IsNullOrWhiteSpace(pushArgs.Name))
+                        app.Name = pushArgs.Name;
+                    if (pushArgs.Memory != 0)
+                        app.Memory = pushArgs.Memory;
+                    if (!string.IsNullOrWhiteSpace(pushArgs.Stack))
+                        app.StackName = pushArgs.Stack;
+                    if (!string.IsNullOrWhiteSpace(pushArgs.Dir))
+                        app.Path = pushArgs.Dir;
+                    apps.Add(app);
+                }
+                else
+                {
+                    apps.AddRange(manifestApps);
                 }
             }
 
+            foreach (Application app in apps)
+            {
+                if (!Directory.Exists(app.Path))
+                {
+                    throw new DirectoryNotFoundException(string.Format("Directory '{0}' not found", app.Path));
+                }
 
-            new ConsoleString(string.Format("App is running, done. You can browse it here: http://{0}.{1}", pushArgs.Name, allDomains.First().Name) , ConsoleColor.Green).WriteLine();
+                CloudFoundryClient client = SetTargetInfoFromFile();
+
+                // ======= GRAB FIRST SPACE AVAILABLE =======
+
+                new ConsoleString("Looking up spaces ...", ConsoleColor.Cyan).WriteLine();
+
+                PagedResponseCollection<ListAllSpacesResponse> spaces = client.Spaces.ListAllSpaces().Result;
+
+                if (spaces.Count() == 0)
+                {
+                    throw new InvalidOperationException("Couldn't find any spaces");
+                }
+
+                ListAllSpacesResponse space = spaces.First();
+
+                new ConsoleString(string.Format("Will be using space {0}", space.Name), ConsoleColor.Green).WriteLine();
+
+                // ======= CREATE AN APPLICATION =======
+
+                new ConsoleString("Creating app ...", ConsoleColor.Cyan).WriteLine();
+
+
+                PagedResponseCollection<ListAllStacksResponse> stacks = client.Stacks.ListAllStacks(new RequestOptions()
+                {
+                    Query = string.Format("name:{0}", app.StackName)
+                }).Result;
+
+                if (stacks.Count() == 0)
+                {
+                    throw new InvalidOperationException(string.Format("Couldn't find the stack {0}", app.StackName));
+                }
+
+                CreateAppRequest createAppRequest = new CreateAppRequest()
+                {
+                    Name = app.Name,
+                    Memory = (int)app.Memory,
+                    StackGuid = new Guid(stacks.First().EntityMetadata.Guid),
+                    SpaceGuid = new Guid(space.EntityMetadata.Guid),
+                    Instances = app.InstanceCount,
+                    Buildpack = app.BuildpackUrl,
+                    Command = app.Command,
+                    EnvironmentJson = app.EnvironmentVariables,
+                    HealthCheckTimeout = app.HealthCheckTimeout
+                };
+
+                CreateAppResponse appCreateResponse = client.Apps.CreateApp(createAppRequest).Result;
+
+                // ======= BIND SERVICES
+
+                PagedResponseCollection<ListAllServiceInstancesResponse> allServices = client.ServiceInstances.ListAllServiceInstances().Result;
+
+                foreach(string service in app.GetServices())
+                {
+                    new ConsoleString(string.Format("Binding service {0} to app {1} ...", service, app.Name), ConsoleColor.Cyan).WriteLine();
+
+                    var currentService = allServices.FirstOrDefault(s => s.Name.ToUpperInvariant() == service.ToUpperInvariant());
+                    if(currentService == null)
+                    {
+                        throw new InvalidOperationException(string.Format("Could not find service {0}", service));
+                    }
+                    CreateServiceBindingRequest request = new CreateServiceBindingRequest()
+                    {
+                        AppGuid = appCreateResponse.EntityMetadata.Guid,
+                        ServiceInstanceGuid = currentService.EntityMetadata.Guid
+                    };
+
+                    client.ServiceBindings.CreateServiceBinding(request).Wait();
+                }
+
+                new ConsoleString(string.Format("Created app with guid '{0}'", appCreateResponse.EntityMetadata.Guid), ConsoleColor.Green).WriteLine();
+
+                // ======= CREATE ROUTES =======
+
+                PagedResponseCollection<ListAllSharedDomainsResponse> allDomains = client.SharedDomains.ListAllSharedDomains().Result;
+
+                foreach (string domain in app.GetDomains())
+                {
+                    new ConsoleString("Creating a route ...", ConsoleColor.Cyan).WriteLine();
+
+                    if (allDomains.Count() == 0)
+                    {
+                        throw new InvalidOperationException("Could not find any shared domains");
+                    }
+
+                    var currentDomain = allDomains.FirstOrDefault(d => d.Name.ToUpperInvariant() == domain.ToUpperInvariant());
+                    if (currentDomain == null)
+                    {
+                        throw new InvalidOperationException(string.Format("Could not find domain {0}", domain));
+                    }
+
+                    foreach (string host in app.GetHosts())
+                    {
+                        string url = string.Format("{0}.{1}", host, domain);
+
+                        CreateRouteResponse createRouteResponse = client.Routes.CreateRoute(new CreateRouteRequest()
+                        {
+                            DomainGuid = new Guid(currentDomain.EntityMetadata.Guid),
+                            Host = host,
+                            SpaceGuid = new Guid(space.EntityMetadata.Guid)
+                        }).Result;
+
+                        new ConsoleString(string.Format("Created route '{0}.{1}'", host, domain), ConsoleColor.Green).WriteLine();
+
+                        // ======= BIND THE ROUTE =======
+
+                        new ConsoleString("Associating the route ...", ConsoleColor.Cyan).WriteLine();
+
+                        client.Routes.AssociateAppWithRoute(
+                            new Guid(createRouteResponse.EntityMetadata.Guid),
+                            new Guid(appCreateResponse.EntityMetadata.Guid)).Wait();
+                    }
+                }
+                // ======= HOOKUP LOGGING =======
+                // TODO: detect logyard vs loggregator
+
+                GetV1InfoResponse v1Info = client.Info.GetV1Info().Result;
+                LogyardLog logyard = new LogyardLog(new Uri(v1Info.AppLogEndpoint), string.Format("bearer {0}", client.AuthorizationToken));
+
+                logyard.ErrorReceived += (sender, error) =>
+                {
+                    Program.PrintExceptionMessage(error.Error);
+                };
+
+                logyard.StreamOpened += (sender, args) =>
+                {
+                    new ConsoleString("Log stream opened.", ConsoleColor.Cyan).WriteLine();
+                };
+
+                logyard.StreamClosed += (sender, args) =>
+                {
+                    new ConsoleString("Log stream closed.", ConsoleColor.Cyan).WriteLine();
+                };
+
+                logyard.MessageReceived += (sender, message) =>
+                {
+                    new ConsoleString(
+                        string.Format("[{0}] - {1}: {2}",
+                        message.Message.Value.Source,
+                        message.Message.Value.HumanTime,
+                        message.Message.Value.Text),
+                        ConsoleColor.White).WriteLine();
+                };
+
+                logyard.StartLogStream(appCreateResponse.EntityMetadata.Guid, 0, true);
+
+                // ======= PUSH THE APP =======
+                new ConsoleString("Pushing the app ...", ConsoleColor.Cyan).WriteLine();
+                client.Apps.PushProgress += (sender, progress) =>
+                {
+                    new ConsoleString(string.Format("Push at {0}%", progress.Percent), ConsoleColor.Yellow).WriteLine();
+                    new ConsoleString(string.Format("{0}", progress.Message), ConsoleColor.DarkYellow).WriteLine();
+                };
+
+                client.Apps.Push(new Guid(appCreateResponse.EntityMetadata.Guid), app.Path, true).Wait();
+
+                // ======= WAIT FOR APP TO COME ONLINE =======
+                while (true)
+                {
+                    GetAppSummaryResponse appSummary = client.Apps.GetAppSummary(new Guid(appCreateResponse.EntityMetadata.Guid)).Result;
+
+                    if (appSummary.RunningInstances > 0)
+                    {
+                        break;
+                    }
+
+                    if (appSummary.PackageState == "FAILED")
+                    {
+                        throw new Exception("App staging failed.");
+                    }
+                    else if (appSummary.PackageState == "PENDING")
+                    {
+                        new ConsoleString("[cfcmd] - App is staging ...", ConsoleColor.DarkCyan).WriteLine();
+                    }
+                    else if (appSummary.PackageState == "STAGED")
+                    {
+                        new ConsoleString("[cfcmd] - App staged, waiting for it to come online ...", ConsoleColor.DarkCyan).WriteLine();
+                    }
+
+                    Thread.Sleep(2000);
+                }
+
+                logyard.StopLogStream();
+
+                new ConsoleString(string.Format("App is running, done."), ConsoleColor.Green).WriteLine();
+            }
         }
 
         [ArgActionMethod, ArgDescription("Deletes an application")]
@@ -278,111 +433,6 @@ namespace cfcmd
 
             return client;
         }
-
-        private void GetLogsUsingLoggregator(CloudFoundryClient client, Guid? appGuid, GetInfoResponse detailedInfo)
-        {
-            using (CloudFoundry.Loggregator.Client.LoggregatorLog loggregator = new CloudFoundry.Loggregator.Client.LoggregatorLog(new Uri(detailedInfo.LoggingEndpoint), string.Format(CultureInfo.InvariantCulture, "bearer {0}", client.AuthorizationToken),null,this.skipSSL))
-            {
-                loggregator.ErrorReceived += (sender, error) =>
-                {
-                    Program.PrintExceptionMessage(error.Error);
-                };
-
-                loggregator.StreamOpened += (sender, args) =>
-                {
-                    new ConsoleString("Log stream opened.", ConsoleColor.Cyan).WriteLine();
-                };
-
-                loggregator.StreamClosed += (sender, args) =>
-                {
-                    new ConsoleString("Log stream closed.", ConsoleColor.Cyan).WriteLine();
-                };
-
-                loggregator.MessageReceived += (sender, message) =>
-                {
-                    var timeStamp = message.LogMessage.Timestamp / 1000 / 1000;
-                    var time = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddMilliseconds(timeStamp);
-
-                    new ConsoleString(
-                   string.Format("[{0}] - {1}: {2}",
-                   message.LogMessage.SourceName,
-                   time.ToString(),
-                   message.LogMessage.Message), ConsoleColor.White).WriteLine();
-                };
-
-                loggregator.Tail(appGuid.Value.ToString());
-
-                this.MonitorApp(client, appGuid);
-
-                loggregator.StopLogStream();
-            }
-        }
-
-        private void GetLogsUsingLogyard(CloudFoundryClient client, Guid? appGuid, GetV1InfoResponse info)
-        {
-            using (LogyardLog logyard = new LogyardLog(new Uri(info.AppLogEndpoint), string.Format(CultureInfo.InvariantCulture, "bearer {0}", client.AuthorizationToken), null, this.skipSSL))
-            {
-                logyard.ErrorReceived += (sender, error) =>
-                {
-                    Program.PrintExceptionMessage(error.Error);
-                };
-
-                logyard.StreamOpened += (sender, args) =>
-                {
-                    new ConsoleString("Log stream opened.", ConsoleColor.Cyan).WriteLine();
-                };
-
-                logyard.StreamClosed += (sender, args) =>
-                {
-                    new ConsoleString("Log stream closed.", ConsoleColor.Cyan).WriteLine();
-                };
-
-                logyard.MessageReceived += (sender, message) =>
-                {
-                    new ConsoleString(
-                        string.Format("[{0}] - {1}: {2}",
-                        message.Message.Value.Source,
-                        message.Message.Value.HumanTime,
-                        message.Message.Value.Text),
-                        ConsoleColor.White).WriteLine();
-                };
-
-                logyard.StartLogStream(appGuid.Value.ToString(), 0, true);
-
-                this.MonitorApp(client, appGuid);
-
-                logyard.StopLogStream();
-            }
-        }
-
-        private void MonitorApp(CloudFoundryClient client, Guid? appGuid)
-        {
-            // ======= WAIT FOR APP TO COME ONLINE =======
-            while (true)
-            {
-                GetAppSummaryResponse appSummary = client.Apps.GetAppSummary(appGuid.Value).Result;
-
-                if (appSummary.RunningInstances > 0)
-                {
-                    break;
-                }
-
-                if (appSummary.PackageState == "FAILED")
-                {
-                    throw new Exception("App staging failed.");
-                }
-                else if (appSummary.PackageState == "PENDING")
-                {
-                    new ConsoleString("[cfcmd] - App is staging ...", ConsoleColor.DarkCyan).WriteLine();
-                }
-                else if (appSummary.PackageState == "STAGED")
-                {
-                    new ConsoleString("[cfcmd] - App staged, waiting for it to come online ...", ConsoleColor.DarkCyan).WriteLine();
-                }
-
-                Thread.Sleep(2000);
-            }
-        }
     }
 
     public class LoginArgs
@@ -408,17 +458,23 @@ namespace cfcmd
 
     public class PushArgs
     {
-        [ArgShortcut("--name"), ArgShortcut("-n"), ArgDescription("Name of app"), ArgRequired(PromptIfMissing = true)]
+        [ArgShortcut("--name"), ArgShortcut("-n"), ArgDescription("Name of app"), ArgRequired(IfNot = "Manifest")]
         public string Name { get; set; }
 
-        [ArgShortcut("--memory"), ArgShortcut("-m"), ArgDescription("Amount of memory to allocate"), ArgRequired(PromptIfMissing = true)]
+        [ArgShortcut("--memory"), ArgShortcut("-m"), ArgDescription("Amount of memory to allocate"), ArgRequired(IfNot = "Manifest")]
         public int Memory { get; set; }
 
-        [ArgShortcut("--stack"), ArgShortcut("-s"), ArgDescription("Stack to use"), ArgRequired(PromptIfMissing = true)]
+        [ArgShortcut("--stack"), ArgShortcut("-s"), ArgDescription("Stack to use"), ArgRequired(IfNot = "Manifest")]
         public string Stack { get; set; }
 
-        [ArgShortcut("--dir"), ArgShortcut("-d"), ArgDescription("Directory you want to push"), ArgRequired(PromptIfMissing = true)]
+        [ArgShortcut("--dir"), ArgShortcut("-d"), ArgDescription("Directory you want to push"), ArgRequired(IfNot = "Manifest")]
         public string Dir { get; set; }
+
+        [ArgShortcut("--manifest"), ArgShortcut("-f"), ArgDescription("Path to manifest")]
+        public string Manifest { get; set; }
+
+        [ArgShortcut("--no-manifest"), ArgDescription("Ignore manifests if they exist.")]
+        public bool NoManifest { get; set; }
     }
 
     class Program
