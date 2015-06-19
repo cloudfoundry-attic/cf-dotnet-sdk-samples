@@ -7,6 +7,7 @@ using PowerArgs;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -148,39 +149,6 @@ namespace cfcmd
                 new Guid(createRouteResponse.EntityMetadata.Guid),
                 new Guid(appCreateResponse.EntityMetadata.Guid)).Wait();
 
-            // ======= HOOKUP LOGGING =======
-            // TODO: detect logyard vs loggregator
-
-            GetV1InfoResponse v1Info = client.Info.GetV1Info().Result;
-            LogyardLog logyard = new LogyardLog(new Uri(v1Info.AppLogEndpoint), string.Format("bearer {0}", client.AuthorizationToken));
-
-            logyard.ErrorReceived += (sender, error) =>
-            {
-                Program.PrintExceptionMessage(error.Error);
-            };
-
-            logyard.StreamOpened += (sender, args) =>
-            {
-                new ConsoleString("Log stream opened.", ConsoleColor.Cyan).WriteLine();
-            };
-
-            logyard.StreamClosed += (sender, args) =>
-            {
-                new ConsoleString("Log stream closed.", ConsoleColor.Cyan).WriteLine();
-            };
-
-            logyard.MessageReceived += (sender, message) =>
-            {
-                new ConsoleString(
-                    string.Format("[{0}] - {1}: {2}",
-                    message.Message.Value.Source,
-                    message.Message.Value.HumanTime,
-                    message.Message.Value.Text), 
-                    ConsoleColor.White).WriteLine();
-            };
-
-            logyard.StartLogStream(appCreateResponse.EntityMetadata.Guid, 0, true);
-
             // ======= PUSH THE APP =======
             new ConsoleString("Pushing the app ...", ConsoleColor.Cyan).WriteLine();
             client.Apps.PushProgress += (sender, progress) =>
@@ -191,34 +159,28 @@ namespace cfcmd
 
             client.Apps.Push(new Guid(appCreateResponse.EntityMetadata.Guid), pushArgs.Dir, true).Wait();
 
-            // ======= WAIT FOR APP TO COME ONLINE =======
-            bool done = false;
-            while (true)
+            // ======= HOOKUP LOGGING AND MONITOR APP =======
+
+            GetV1InfoResponse v1Info = client.Info.GetV1Info().Result;
+
+            if (string.IsNullOrWhiteSpace(v1Info.AppLogEndpoint) == false)
             {
-                GetAppSummaryResponse appSummary = client.Apps.GetAppSummary(new Guid(appCreateResponse.EntityMetadata.Guid)).Result;
+                this.GetLogsUsingLogyard(client, new Guid(appCreateResponse.EntityMetadata.Guid), v1Info);
+            }
+            else
+            {
+                GetInfoResponse detailedInfo = client.Info.GetInfo().Result;
 
-                if (appSummary.RunningInstances > 0)
+                if (string.IsNullOrWhiteSpace(detailedInfo.LoggingEndpoint) == false)
                 {
-                    break;
+                    this.GetLogsUsingLoggregator(client, new Guid(appCreateResponse.EntityMetadata.Guid), detailedInfo);
                 }
-
-                if (appSummary.PackageState == "FAILED")
+                else
                 {
-                    throw new Exception("App staging failed.");
+                    throw new Exception("Could not retrieve application logs");
                 }
-                else if (appSummary.PackageState == "PENDING")
-                {
-                    new ConsoleString("[cfcmd] - App is staging ...", ConsoleColor.DarkCyan).WriteLine();
-                }
-                else if (appSummary.PackageState == "STAGED")
-                {
-                    new ConsoleString("[cfcmd] - App staged, waiting for it to come online ...", ConsoleColor.DarkCyan).WriteLine();
-                }
-
-                Thread.Sleep(2000);
             }
 
-            logyard.StopLogStream();
 
             new ConsoleString(string.Format("App is running, done. You can browse it here: http://{0}.{1}", pushArgs.Name, allDomains.First().Name) , ConsoleColor.Green).WriteLine();
         }
@@ -315,6 +277,111 @@ namespace cfcmd
             new ConsoleString(string.Format("Logged in.", this.api), ConsoleColor.Green).WriteLine();
 
             return client;
+        }
+
+        private void GetLogsUsingLoggregator(CloudFoundryClient client, Guid? appGuid, GetInfoResponse detailedInfo)
+        {
+            using (CloudFoundry.Loggregator.Client.LoggregatorLog loggregator = new CloudFoundry.Loggregator.Client.LoggregatorLog(new Uri(detailedInfo.LoggingEndpoint), string.Format(CultureInfo.InvariantCulture, "bearer {0}", client.AuthorizationToken),null,this.skipSSL))
+            {
+                loggregator.ErrorReceived += (sender, error) =>
+                {
+                    Program.PrintExceptionMessage(error.Error);
+                };
+
+                loggregator.StreamOpened += (sender, args) =>
+                {
+                    new ConsoleString("Log stream opened.", ConsoleColor.Cyan).WriteLine();
+                };
+
+                loggregator.StreamClosed += (sender, args) =>
+                {
+                    new ConsoleString("Log stream closed.", ConsoleColor.Cyan).WriteLine();
+                };
+
+                loggregator.MessageReceived += (sender, message) =>
+                {
+                    var timeStamp = message.LogMessage.Timestamp / 1000 / 1000;
+                    var time = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddMilliseconds(timeStamp);
+
+                    new ConsoleString(
+                   string.Format("[{0}] - {1}: {2}",
+                   message.LogMessage.SourceName,
+                   time.ToString(),
+                   message.LogMessage.Message), ConsoleColor.White).WriteLine();
+                };
+
+                loggregator.Tail(appGuid.Value.ToString());
+
+                this.MonitorApp(client, appGuid);
+
+                loggregator.StopLogStream();
+            }
+        }
+
+        private void GetLogsUsingLogyard(CloudFoundryClient client, Guid? appGuid, GetV1InfoResponse info)
+        {
+            using (LogyardLog logyard = new LogyardLog(new Uri(info.AppLogEndpoint), string.Format(CultureInfo.InvariantCulture, "bearer {0}", client.AuthorizationToken), null, this.skipSSL))
+            {
+                logyard.ErrorReceived += (sender, error) =>
+                {
+                    Program.PrintExceptionMessage(error.Error);
+                };
+
+                logyard.StreamOpened += (sender, args) =>
+                {
+                    new ConsoleString("Log stream opened.", ConsoleColor.Cyan).WriteLine();
+                };
+
+                logyard.StreamClosed += (sender, args) =>
+                {
+                    new ConsoleString("Log stream closed.", ConsoleColor.Cyan).WriteLine();
+                };
+
+                logyard.MessageReceived += (sender, message) =>
+                {
+                    new ConsoleString(
+                        string.Format("[{0}] - {1}: {2}",
+                        message.Message.Value.Source,
+                        message.Message.Value.HumanTime,
+                        message.Message.Value.Text),
+                        ConsoleColor.White).WriteLine();
+                };
+
+                logyard.StartLogStream(appGuid.Value.ToString(), 0, true);
+
+                this.MonitorApp(client, appGuid);
+
+                logyard.StopLogStream();
+            }
+        }
+
+        private void MonitorApp(CloudFoundryClient client, Guid? appGuid)
+        {
+            // ======= WAIT FOR APP TO COME ONLINE =======
+            while (true)
+            {
+                GetAppSummaryResponse appSummary = client.Apps.GetAppSummary(appGuid.Value).Result;
+
+                if (appSummary.RunningInstances > 0)
+                {
+                    break;
+                }
+
+                if (appSummary.PackageState == "FAILED")
+                {
+                    throw new Exception("App staging failed.");
+                }
+                else if (appSummary.PackageState == "PENDING")
+                {
+                    new ConsoleString("[cfcmd] - App is staging ...", ConsoleColor.DarkCyan).WriteLine();
+                }
+                else if (appSummary.PackageState == "STAGED")
+                {
+                    new ConsoleString("[cfcmd] - App staged, waiting for it to come online ...", ConsoleColor.DarkCyan).WriteLine();
+                }
+
+                Thread.Sleep(2000);
+            }
         }
     }
 
