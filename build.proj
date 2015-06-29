@@ -8,10 +8,6 @@
     
   /t:Build
     Builds assemblies.
-
-  /t:Versioning
-    Version the assemblies
-
   -->  
 
   <PropertyGroup>
@@ -40,7 +36,6 @@
   <PropertyGroup>
     <MSTestCommand>&quot;$(VS120COMNTOOLS)\..\IDE\mstest.exe&quot;</MSTestCommand>
     <ExtensionTasksPath>$(LibraryRoot)\packages\MSBuild.Extension.Pack.1.5.0\tools\net40\</ExtensionTasksPath>
-    <NuGetCommand>&quot;$(LibraryRoot)\.nuget\nuget.exe&quot;</NuGetCommand>
   </PropertyGroup>
 
   <!-- Import msbuild extensions -->
@@ -60,18 +55,4 @@
              Targets="Clean" />
   </Target>
 
-  <!-- Target for restoring nuget packages -->
-  <Target Name="RestoreNugetPackages">
-    <Exec Command="$(NuGetCommand) restore $(SamplesSolution)"/>
-  </Target>
-
-  <!-- Target for automatically versioning the assemblies -->
-  <Target Name="Versioning">
-    <Message Text="Version: $(version)" />
-  
-    <ItemGroup>
-      <AssemblyInfoFiles Include="$(LibraryRoot)\src\cfcmd\Properties\AssemblyInfo.cs"/>
-    </ItemGroup>
-
-  </Target>
 </Project>
