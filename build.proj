@@ -42,7 +42,7 @@
   <Import Project="$(ExtensionTasksPath)MSBuild.ExtensionPack.tasks" Condition="exists('$(ExtensionTasksPath)')"/>
   
   <!-- Build target -->
-  <Target Name="Build" DependsOnTargets="Versioning">
+  <Target Name="Build">
     <MSBuild Projects="$(SamplesSolution)"
              Properties="Configuration=$(Configuration);Platform=Any CPU;"
              Targets="Build" />
