@@ -8,6 +8,20 @@
     
   /t:Build
     Builds assemblies.
+
+  /t:Package 
+    Builds NuGet packages using the binaries folder contents.
+    The packages will drop to .\binaries\packages.
+
+  /t:UnitTest
+    Runs unit tests
+    
+  /t:IntegrationTests
+    Runs integration tests
+    
+  /t:RestoreNugetPackages
+    Restores nuget packages
+    
   -->  
 
   <PropertyGroup>
@@ -17,7 +31,7 @@
   <PropertyGroup>
     <LibraryRoot>$(MSBuildThisFileDirectory)</LibraryRoot>
     <LibrarySourceFolder>$(LibraryRoot)\src</LibrarySourceFolder>
-    <SamplesSolution>cf-dotnet-sdk-samples.sln</SamplesSolution>
+    <SDKSolution>cf-dotnet-sdk-samples.sln</SDKSolution>
     <PackageOutputDir>$(BinariesFolder)\packages</PackageOutputDir>
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
   </PropertyGroup>
@@ -34,25 +48,49 @@
   </PropertyGroup>  
  
   <PropertyGroup>
+    <NuGetCommand>&quot;$(LibraryRoot)\.nuget\nuget.exe&quot;</NuGetCommand>
     <MSTestCommand>&quot;$(VS120COMNTOOLS)\..\IDE\mstest.exe&quot;</MSTestCommand>
     <ExtensionTasksPath>$(LibraryRoot)\packages\MSBuild.Extension.Pack.1.5.0\tools\net40\</ExtensionTasksPath>
+    
   </PropertyGroup>
 
   <!-- Import msbuild extensions -->
   <Import Project="$(ExtensionTasksPath)MSBuild.ExtensionPack.tasks" Condition="exists('$(ExtensionTasksPath)')"/>
   
   <!-- Build target -->
-  <Target Name="Build">
-    <MSBuild Projects="$(SamplesSolution)"
+  <Target Name="Build" DependsOnTargets="RestoreNugetPackages; Versioning">
+    <MSBuild Projects="$(SDKSolution)"
              Properties="Configuration=$(Configuration);Platform=Any CPU;"
              Targets="Build" />
   </Target>
 
   <!-- Clean target -->
-  <Target Name="Clean">
-    <MSBuild Projects="$(SamplesSolution)"
+  <Target Name="Clean" DependsOnTargets="RestoreNugetPackages">
+    <MSBuild Projects="$(SDKSolution)"
              Properties="Configuration=$(Configuration);Platform=Any CPU"
              Targets="Clean" />
   </Target>
 
+  <!-- Target for restoring nuget packages -->
+  <Target Name="RestoreNugetPackages">
+    <Exec Command="$(NuGetCommand) restore $(SDKSolution)"/>
+  </Target>
+
+  <!-- Target for automatically versioning the assemblies -->
+  <Target Name="Versioning">
+    <Message Text="Version: $(version)" />
+  
+    <ItemGroup>
+      <AssemblyInfoFiles Include="$(LibraryRoot)\src\CloudFoundry.CloudController.V2.Client\Properties\AssemblyInfo.cs"/>
+      <AssemblyInfoFiles Include="$(LibraryRoot)\src\CloudFoundry.CloudController.Common\Properties\AssemblyInfo.cs"/>
+      <AssemblyInfoFiles Include="$(LibraryRoot)\src\CloudFoundry.Logyard.Client\Properties\AssemblyInfo.cs"/>
+      <AssemblyInfoFiles Include="$(LibraryRoot)\src\CloudFoundry.UAA.Client\Properties\AssemblyInfo.cs"/>
+      <AssemblyInfoFiles Include="$(LibraryRoot)\src\CloudFoundry.Loggregator.Client\Properties\AssemblyInfo.cs"/>
+    </ItemGroup>
+
+<!--    <MSBuild.ExtensionPack.Framework.AssemblyInfo AssemblyInfoFiles="@(AssemblyInfoFiles)"
+      AssemblyVersion="$(version)"
+      AssemblyFileVersion="$(version)" />
+-->
+  </Target>
 </Project>
