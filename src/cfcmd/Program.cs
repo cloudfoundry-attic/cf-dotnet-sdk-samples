@@ -1,6 +1,7 @@
-﻿using CloudFoundry.CloudController.V2;
-using CloudFoundry.CloudController.V2.Client;
-using CloudFoundry.CloudController.V2.Client.Data;
+﻿using CloudFoundry.CloudController.V3;
+using CloudFoundry.CloudController.V3.Client;
+using CloudFoundry.CloudController.V3.Client.Data;
+using CCV2 = CloudFoundry.CloudController.V2.Client;
 using CloudFoundry.Logyard.Client;
 using CloudFoundry.Manifests;
 using CloudFoundry.Manifests.Models;
@@ -14,6 +15,8 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Globalization;
+using System.Collections;
 
 namespace cfcmd
 {
@@ -26,28 +29,45 @@ namespace cfcmd
         private string api;
         private string token;
         private bool skipSSL;
+        private bool useV3 = false;
 
         [HelpHook, ArgShortcut("-?"), ArgDescription("Shows this help")]
         public bool Help { get; set; }
 
         [ArgActionMethod, ArgDescription("List all applications")]
-        public void Apps()
+        public void Apps(AppsArgs appsArgs)
         {
             CloudFoundryClient client = SetTargetInfoFromFile();
-
-            PagedResponseCollection<ListAllAppsResponse> apps = client.Apps.ListAllApps().Result;
-            while (apps != null && apps.Properties.TotalResults != 0)
+            if (appsArgs.V3)
             {
-                foreach (var app in apps)
+                var apps = client.Apps.ListAllApps().Result;
+                while (apps != null && apps.Pagination.TotalResults != 0)
                 {
-                    new ConsoleString(string.Format("{0}", app.Name), ConsoleColor.Green).WriteLine();
-                    new ConsoleString(string.Format("Memory: {0}", app.Memory), ConsoleColor.White).WriteLine();
-                    new ConsoleString(string.Format("Buildpack: {0}", app.Buildpack ?? app.DetectedBuildpack ?? "n/a"), ConsoleColor.White).WriteLine();
-                    new ConsoleString(string.Format("Instances: {0}", app.Instances), ConsoleColor.White).WriteLine();
-                    new ConsoleString("------------------", ConsoleColor.Gray).WriteLine();
-                }
+                    foreach (var app in apps)
+                    {
+                        new ConsoleString(string.Format("{0}", app.Name), ConsoleColor.Green).WriteLine();
+                        new ConsoleString("------------------", ConsoleColor.Gray).WriteLine();
+                    }
 
-                apps = apps.GetNextPage().Result;
+                    apps = apps.GetNextPage().Result;
+                }
+            }
+            else
+            {
+                var apps = client.V2.Apps.ListAllApps().Result;
+                while (apps != null && apps.Properties.TotalResults != 0)
+                {
+                    foreach (var app in apps)
+                    {
+                        new ConsoleString(string.Format("{0}", app.Name), ConsoleColor.Green).WriteLine();
+                        new ConsoleString(string.Format("Memory: {0}", app.Memory), ConsoleColor.White).WriteLine();
+                        new ConsoleString(string.Format("Buildpack: {0}", app.Buildpack ?? app.DetectedBuildpack ?? "n/a"), ConsoleColor.White).WriteLine();
+                        new ConsoleString(string.Format("Instances: {0}", app.Instances), ConsoleColor.White).WriteLine();
+                        new ConsoleString("------------------", ConsoleColor.Gray).WriteLine();
+                    }
+
+                    apps = apps.GetNextPage().Result;
+                }
             }
         }
 
@@ -56,7 +76,7 @@ namespace cfcmd
         {
             CloudFoundryClient client = SetTargetInfoFromFile();
 
-            PagedResponseCollection<ListAllStacksResponse> stacks = client.Stacks.ListAllStacks().Result;
+            var stacks = client.V2.Stacks.ListAllStacks().Result;
             while (stacks != null && stacks.Properties.TotalResults != 0)
             {
                 foreach (var stack in stacks)
@@ -71,13 +91,15 @@ namespace cfcmd
         [ArgActionMethod, ArgDescription("Push the current directory to the cloud")]
         public void Push(PushArgs pushArgs)
         {
+            this.useV3 = pushArgs.V3;
+
             List<Application> manifestApps = new List<Application>();
             List<Application> apps = new List<Application>();
 
-            if(!pushArgs.NoManifest)
+            if (!pushArgs.NoManifest)
             {
                 string path;
-                if(!string.IsNullOrWhiteSpace(pushArgs.Manifest))
+                if (!string.IsNullOrWhiteSpace(pushArgs.Manifest))
                 {
                     path = pushArgs.Manifest;
                 }
@@ -90,35 +112,40 @@ namespace cfcmd
                     Manifest manifest = ManifestDiskRepository.ReadManifest(path);
                     manifestApps.AddRange(manifest.Applications().ToList());
                 }
-                catch{
-                    if(!string.IsNullOrWhiteSpace(pushArgs.Manifest))
+                catch
+                {
+                    if (!string.IsNullOrWhiteSpace(pushArgs.Manifest))
                     {
                         throw new FileNotFoundException("Error reading manifest file.");
                     }
                 }
-                
+
             }
-            if(manifestApps.Count == 0)
+            if (manifestApps.Count == 0)
             {
-                apps.Add(new Application()
+                var app = new Application()
                 {
                     Name = pushArgs.Name,
                     Memory = pushArgs.Memory,
                     Path = pushArgs.Dir,
                     StackName = pushArgs.Stack
-                });
+                };
+                app.Hosts.Add(pushArgs.Name);
+                apps.Add(app);
             }
             else if (manifestApps.Count == 1)
             {
                 Application app = manifestApps[0];
-                if(!string.IsNullOrWhiteSpace(pushArgs.Name))
+                if (!string.IsNullOrWhiteSpace(pushArgs.Name))
                     app.Name = pushArgs.Name;
-                if(pushArgs.Memory != 0)
+                if (pushArgs.Memory != 0)
                     app.Memory = pushArgs.Memory;
                 if (!string.IsNullOrWhiteSpace(pushArgs.Stack))
                     app.StackName = pushArgs.Stack;
                 if (!string.IsNullOrWhiteSpace(pushArgs.Dir))
                     app.Path = pushArgs.Dir;
+                if(!app.NoHostName && app.Hosts.Count == 0)
+                    app.Hosts.Add(pushArgs.Name);
                 apps.Add(app);
             }
             else
@@ -146,6 +173,8 @@ namespace cfcmd
                 }
             }
 
+            CloudFoundryClient client = SetTargetInfoFromFile();
+
             foreach (Application app in apps)
             {
                 if (!Directory.Exists(app.Path))
@@ -153,20 +182,18 @@ namespace cfcmd
                     throw new DirectoryNotFoundException(string.Format("Directory '{0}' not found", app.Path));
                 }
 
-                CloudFoundryClient client = SetTargetInfoFromFile();
-
                 // ======= GRAB FIRST SPACE AVAILABLE =======
 
                 new ConsoleString("Looking up spaces ...", ConsoleColor.Cyan).WriteLine();
 
-                PagedResponseCollection<ListAllSpacesResponse> spaces = client.Spaces.ListAllSpaces().Result;
+                var spaces = client.V2.Spaces.ListAllSpaces().Result;
 
                 if (spaces.Count() == 0)
                 {
                     throw new InvalidOperationException("Couldn't find any spaces");
                 }
 
-                ListAllSpacesResponse space = spaces.First();
+                CCV2.Data.ListAllSpacesResponse space = spaces.First();
 
                 new ConsoleString(string.Format("Will be using space {0}", space.Name), ConsoleColor.Green).WriteLine();
 
@@ -174,8 +201,7 @@ namespace cfcmd
 
                 new ConsoleString("Creating app ...", ConsoleColor.Cyan).WriteLine();
 
-
-                PagedResponseCollection<ListAllStacksResponse> stacks = client.Stacks.ListAllStacks(new RequestOptions()
+                var stacks = client.V2.Stacks.ListAllStacks(new CCV2.RequestOptions()
                 {
                     Query = string.Format("name:{0}", app.StackName)
                 }).Result;
@@ -185,50 +211,121 @@ namespace cfcmd
                     throw new InvalidOperationException(string.Format("Couldn't find the stack {0}", app.StackName));
                 }
 
-                CreateAppRequest createAppRequest = new CreateAppRequest()
-                {
-                    Name = app.Name,
-                    Memory = (int)app.Memory,
-                    StackGuid = new Guid(stacks.First().EntityMetadata.Guid),
-                    SpaceGuid = new Guid(space.EntityMetadata.Guid),
-                    Instances = app.InstanceCount,
-                    Buildpack = app.BuildpackUrl,
-                    Command = app.Command,
-                    EnvironmentJson = app.EnvironmentVariables,
-                    HealthCheckTimeout = app.HealthCheckTimeout
-                };
+                Guid appGuid = Guid.Empty;
 
-                CreateAppResponse appCreateResponse = client.Apps.CreateApp(createAppRequest).Result;
+                if (pushArgs.V3)
+                {
+                    CreateAppRequest createAppRequest = new CreateAppRequest()
+                    {
+                        Name = app.Name,
+                        SpaceGuid = new Guid(space.EntityMetadata.Guid)
+                    };
+
+                    CreateAppResponse appCreateResponse = client.Apps.CreateApp(createAppRequest).Result;
+                    appGuid = new Guid(appCreateResponse.Guid.ToString());
+                    new ConsoleString(string.Format("Created app with guid '{0}'", appCreateResponse.Guid), ConsoleColor.Green).WriteLine();
+                }
+                else
+                {
+                    CCV2.Data.CreateAppRequest createAppRequest = new CCV2.Data.CreateAppRequest()
+                    {
+                        Name = app.Name,
+                        Memory = (int)app.Memory,
+                        StackGuid = new Guid(stacks.First().EntityMetadata.Guid),
+                        SpaceGuid = new Guid(space.EntityMetadata.Guid)
+                    };
+
+                    CCV2.Data.CreateAppResponse appCreateResponse = client.V2.Apps.CreateApp(createAppRequest).Result;
+                    appGuid = appCreateResponse.EntityMetadata.Guid;
+                    new ConsoleString(string.Format("Created app with guid '{0}'", appCreateResponse.EntityMetadata.Guid), ConsoleColor.Green).WriteLine();
+                }
+
+                // ======= PUSH THE APP =======
+                new ConsoleString("Pushing the app ...", ConsoleColor.Cyan).WriteLine();
+
+                if (pushArgs.V3)
+                {
+                    client.Apps.PushProgress += (sender, progress) =>
+                    {
+                        new ConsoleString(string.Format("Push at {0}%", progress.Percent), ConsoleColor.Yellow).WriteLine();
+                        new ConsoleString(string.Format("{0}", progress.Message), ConsoleColor.DarkYellow).WriteLine();
+                    };
+
+                    client.Apps.Push(appGuid, app.Path, app.StackName, null, true).Wait();
+                }
+                else
+                {
+                    client.V2.Apps.PushProgress += (sender, progress) =>
+                    {
+                        new ConsoleString(string.Format("Push at {0}%", progress.Percent), ConsoleColor.Yellow).WriteLine();
+                        new ConsoleString(string.Format("{0}", progress.Message), ConsoleColor.DarkYellow).WriteLine();
+                    };
+
+                    client.V2.Apps.Push(appGuid, app.Path, true).Wait();
+                }
+
+                // ======= HOOKUP LOGGING AND MONITOR APP =======
+
+                Guid appGuidV2 = Guid.Empty;
+
+                if (this.useV3)
+                {
+                    appGuidV2 = new Guid(client.Apps.ListAssociatedProcesses(appGuid).Result.First().Guid.ToString());
+                }
+
+                CCV2.Data.GetV1InfoResponse v1Info = client.V2.Info.GetV1Info().Result;
+
+                if (string.IsNullOrWhiteSpace(v1Info.AppLogEndpoint) == false)
+                {
+                    this.GetLogsUsingLogyard(client, appGuidV2, v1Info);
+                }
+                else
+                {
+                    CCV2.Data.GetInfoResponse detailedInfo = client.V2.Info.GetInfo().Result;
+
+                    if (string.IsNullOrWhiteSpace(detailedInfo.LoggingEndpoint) == false)
+                    {
+                        this.GetLogsUsingLoggregator(client, appGuidV2, detailedInfo);
+                    }
+                    else
+                    {
+                        throw new Exception("Could not retrieve application logs");
+                    }
+                }
 
                 // ======= BIND SERVICES
 
-                PagedResponseCollection<ListAllServiceInstancesResponse> allServices = client.ServiceInstances.ListAllServiceInstances().Result;
+                var allServices = client.V2.ServiceInstances.ListAllServiceInstances().Result;
 
-                foreach(string service in app.GetServices())
+                foreach (string service in app.Services)
                 {
                     new ConsoleString(string.Format("Binding service {0} to app {1} ...", service, app.Name), ConsoleColor.Cyan).WriteLine();
 
                     var currentService = allServices.FirstOrDefault(s => s.Name.ToUpperInvariant() == service.ToUpperInvariant());
-                    if(currentService == null)
+                    if (currentService == null)
                     {
                         throw new InvalidOperationException(string.Format("Could not find service {0}", service));
                     }
-                    CreateServiceBindingRequest request = new CreateServiceBindingRequest()
+                    CCV2.Data.CreateServiceBindingRequest request = new CCV2.Data.CreateServiceBindingRequest()
                     {
-                        AppGuid = appCreateResponse.EntityMetadata.Guid,
+                        AppGuid = appGuidV2,
                         ServiceInstanceGuid = currentService.EntityMetadata.Guid
                     };
 
-                    client.ServiceBindings.CreateServiceBinding(request).Wait();
+                    client.V2.ServiceBindings.CreateServiceBinding(request).Wait();
                 }
-
-                new ConsoleString(string.Format("Created app with guid '{0}'", appCreateResponse.EntityMetadata.Guid), ConsoleColor.Green).WriteLine();
 
                 // ======= CREATE ROUTES =======
 
-                PagedResponseCollection<ListAllSharedDomainsResponse> allDomains = client.SharedDomains.ListAllSharedDomains().Result;
+                var allDomains = client.V2.SharedDomains.ListAllSharedDomains().Result;
 
-                foreach (string domain in app.GetDomains())
+                ArrayList domains = app.Domains;
+                if(domains.Count == 0)
+                {
+                    domains.AddRange(allDomains.Select(d => d.Name).ToList());
+                }
+
+                foreach (string domain in domains)
                 {
                     new ConsoleString("Creating a route ...", ConsoleColor.Cyan).WriteLine();
 
@@ -243,11 +340,11 @@ namespace cfcmd
                         throw new InvalidOperationException(string.Format("Could not find domain {0}", domain));
                     }
 
-                    foreach (string host in app.GetHosts())
+                    foreach (string host in app.Hosts)
                     {
                         string url = string.Format("{0}.{1}", host, domain);
 
-                        CreateRouteResponse createRouteResponse = client.Routes.CreateRoute(new CreateRouteRequest()
+                        CCV2.Data.CreateRouteResponse createRouteResponse = client.V2.Routes.CreateRoute(new CCV2.Data.CreateRouteRequest()
                         {
                             DomainGuid = new Guid(currentDomain.EntityMetadata.Guid),
                             Host = host,
@@ -260,81 +357,14 @@ namespace cfcmd
 
                         new ConsoleString("Associating the route ...", ConsoleColor.Cyan).WriteLine();
 
-                        client.Routes.AssociateAppWithRoute(
+                        client.V2.Routes.AssociateAppWithRoute(
                             new Guid(createRouteResponse.EntityMetadata.Guid),
-                            new Guid(appCreateResponse.EntityMetadata.Guid)).Wait();
+                            appGuidV2).Wait();
                     }
                 }
-                // ======= HOOKUP LOGGING =======
-                // TODO: detect logyard vs loggregator
 
-                GetV1InfoResponse v1Info = client.Info.GetV1Info().Result;
-                LogyardLog logyard = new LogyardLog(new Uri(v1Info.AppLogEndpoint), string.Format("bearer {0}", client.AuthorizationToken));
-
-                logyard.ErrorReceived += (sender, error) =>
-                {
-                    Program.PrintExceptionMessage(error.Error);
-                };
-
-                logyard.StreamOpened += (sender, args) =>
-                {
-                    new ConsoleString("Log stream opened.", ConsoleColor.Cyan).WriteLine();
-                };
-
-                logyard.StreamClosed += (sender, args) =>
-                {
-                    new ConsoleString("Log stream closed.", ConsoleColor.Cyan).WriteLine();
-                };
-
-                logyard.MessageReceived += (sender, message) =>
-                {
-                    new ConsoleString(
-                        string.Format("[{0}] - {1}: {2}",
-                        message.Message.Value.Source,
-                        message.Message.Value.HumanTime,
-                        message.Message.Value.Text),
-                        ConsoleColor.White).WriteLine();
-                };
-
-                logyard.StartLogStream(appCreateResponse.EntityMetadata.Guid, 0, true);
-
-                // ======= PUSH THE APP =======
-                new ConsoleString("Pushing the app ...", ConsoleColor.Cyan).WriteLine();
-                client.Apps.PushProgress += (sender, progress) =>
-                {
-                    new ConsoleString(string.Format("Push at {0}%", progress.Percent), ConsoleColor.Yellow).WriteLine();
-                    new ConsoleString(string.Format("{0}", progress.Message), ConsoleColor.DarkYellow).WriteLine();
-                };
-
-                client.Apps.Push(new Guid(appCreateResponse.EntityMetadata.Guid), app.Path, true).Wait();
-
-                // ======= WAIT FOR APP TO COME ONLINE =======
-                while (true)
-                {
-                    GetAppSummaryResponse appSummary = client.Apps.GetAppSummary(new Guid(appCreateResponse.EntityMetadata.Guid)).Result;
-
-                    if (appSummary.RunningInstances > 0)
-                    {
-                        break;
-                    }
-
-                    if (appSummary.PackageState == "FAILED")
-                    {
-                        throw new Exception("App staging failed.");
-                    }
-                    else if (appSummary.PackageState == "PENDING")
-                    {
-                        new ConsoleString("[cfcmd] - App is staging ...", ConsoleColor.DarkCyan).WriteLine();
-                    }
-                    else if (appSummary.PackageState == "STAGED")
-                    {
-                        new ConsoleString("[cfcmd] - App staged, waiting for it to come online ...", ConsoleColor.DarkCyan).WriteLine();
-                    }
-
-                    Thread.Sleep(2000);
-                }
-
-                logyard.StopLogStream();
+                client.Apps.StoppingApp(appGuid, new StoppingAppRequest() { }).Wait();
+                client.Apps.StartingApp(appGuid, new StartingAppRequest() { }).Wait();
 
                 new ConsoleString(string.Format("App is running, done."), ConsoleColor.Green).WriteLine();
             }
@@ -345,20 +375,37 @@ namespace cfcmd
         {
             CloudFoundryClient client = SetTargetInfoFromFile();
 
-            PagedResponseCollection<ListAllAppsResponse> apps = client.Apps.ListAllApps(new RequestOptions()
+            if (!deleteArgs.V3)
             {
-                Query = string.Format("name:{0}", deleteArgs.Name)
-            }).Result;
+                CCV2.PagedResponseCollection<CCV2.Data.ListAllAppsResponse> apps = client.V2.Apps.ListAllApps(new CCV2.RequestOptions()
+                {
+                    Query = string.Format("name:{0}", deleteArgs.Name)
+                }).Result;
 
 
-            if (apps.Count() == 0)
-            {
-                throw new InvalidOperationException(string.Format("Couldn't find an app with name {0}", deleteArgs.Name));
+                if (apps.Count() == 0)
+                {
+                    throw new InvalidOperationException(string.Format("Couldn't find an app with name {0}", deleteArgs.Name));
+                }
+
+                client.V2.Apps.DeleteApp(new Guid(apps.First().EntityMetadata.Guid)).Wait();
+                new ConsoleString(string.Format("Deleted app with id {0}", apps.First().EntityMetadata.Guid), ConsoleColor.Green).WriteLine();
             }
+            else
+            {
+                RequestOptions query = new RequestOptions();
+                query.Query.Add("names", new string[] { deleteArgs.Name });
 
-            client.Apps.DeleteApp(new Guid(apps.First().EntityMetadata.Guid)).Wait();
+                PagedResponseCollection<ListAllAppsResponse> apps = client.Apps.ListAllApps(query).Result;
 
-            new ConsoleString(string.Format("Deleted app with id {0}", apps.First().EntityMetadata.Guid), ConsoleColor.Green).WriteLine();
+                if (apps.Count() == 0)
+                {
+                    throw new InvalidOperationException(string.Format("Couldn't find an app with name {0}", deleteArgs.Name));
+                }
+
+                client.Apps.DeleteApp(new Guid(apps.First().Guid)).Wait();
+                new ConsoleString(string.Format("Deleted app with id {0}", apps.First().Guid), ConsoleColor.Green).WriteLine();
+            }
         }
 
         [ArgActionMethod, ArgDescription("Login to a CloudFoundry target and save a .cf_token file in the current directory")]
@@ -433,6 +480,110 @@ namespace cfcmd
 
             return client;
         }
+
+        private void GetLogsUsingLoggregator(CloudFoundryClient client, Guid? appGuid, CCV2.Data.GetInfoResponse detailedInfo)
+        {
+            using (CloudFoundry.Loggregator.Client.LoggregatorLog loggregator = new CloudFoundry.Loggregator.Client.LoggregatorLog(new Uri(detailedInfo.LoggingEndpoint), string.Format(CultureInfo.InvariantCulture, "bearer {0}", client.AuthorizationToken), null, this.skipSSL))
+            {
+                loggregator.ErrorReceived += (sender, error) =>
+                {
+                    Program.PrintExceptionMessage(error.Error);
+                };
+
+                loggregator.StreamOpened += (sender, args) =>
+                {
+                    new ConsoleString("Log stream opened.", ConsoleColor.Cyan).WriteLine();
+                };
+
+                loggregator.StreamClosed += (sender, args) =>
+                {
+                    new ConsoleString("Log stream closed.", ConsoleColor.Cyan).WriteLine();
+                };
+
+                loggregator.MessageReceived += (sender, message) =>
+                {
+                    var timeStamp = message.LogMessage.Timestamp / 1000 / 1000;
+                    var time = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddMilliseconds(timeStamp);
+
+                    new ConsoleString(
+                   string.Format("[{0}] - {1}: {2}",
+                   message.LogMessage.SourceName,
+                   time.ToString(),
+                   message.LogMessage.Message), ConsoleColor.White).WriteLine();
+                };
+
+                loggregator.Tail(appGuid.Value.ToString());
+
+                this.MonitorApp(client, appGuid);
+
+                loggregator.StopLogStream();
+            }
+        }
+
+        private void GetLogsUsingLogyard(CloudFoundryClient client, Guid? appGuid, CCV2.Data.GetV1InfoResponse info)
+        {
+            using (LogyardLog logyard = new LogyardLog(new Uri(info.AppLogEndpoint), string.Format(CultureInfo.InvariantCulture, "bearer {0}", client.AuthorizationToken), null, this.skipSSL))
+            {
+                logyard.ErrorReceived += (sender, error) =>
+                {
+                    Program.PrintExceptionMessage(error.Error);
+                };
+
+                logyard.StreamOpened += (sender, args) =>
+                {
+                    new ConsoleString("Log stream opened.", ConsoleColor.Cyan).WriteLine();
+                };
+
+                logyard.StreamClosed += (sender, args) =>
+                {
+                    new ConsoleString("Log stream closed.", ConsoleColor.Cyan).WriteLine();
+                };
+
+                logyard.MessageReceived += (sender, message) =>
+                {
+                    new ConsoleString(
+                        string.Format("[{0}] - {1}: {2}",
+                        message.Message.Value.Source,
+                        message.Message.Value.HumanTime,
+                        message.Message.Value.Text),
+                        ConsoleColor.White).WriteLine();
+                };
+
+                logyard.StartLogStream(appGuid.Value.ToString(), 0, true);
+
+                this.MonitorApp(client, appGuid);
+
+                logyard.StopLogStream();
+            }
+        }
+
+        private void MonitorApp(CloudFoundryClient client, Guid? appGuid)
+        {
+            // ======= WAIT FOR APP TO COME ONLINE =======
+            while (true)
+            {
+                CCV2.Data.GetAppSummaryResponse appSummary = client.V2.Apps.GetAppSummary(appGuid).Result;
+
+                if (appSummary.RunningInstances > 0)
+                {
+                    break;
+                }
+
+                if (appSummary.PackageState == "FAILED")
+                {
+                    throw new Exception("App staging failed.");
+                }
+                else if (appSummary.PackageState == "PENDING")
+                {
+                    new ConsoleString("[cfcmd] - App is staging ...", ConsoleColor.DarkCyan).WriteLine();
+                }
+                else if (appSummary.PackageState == "STAGED")
+                {
+                    new ConsoleString("[cfcmd] - App staged, waiting for it to come online ...", ConsoleColor.DarkCyan).WriteLine();
+                }
+                Thread.Sleep(2000);
+            }
+        }
     }
 
     public class LoginArgs
@@ -454,6 +605,9 @@ namespace cfcmd
     {
         [ArgShortcut("--name"), ArgShortcut("-n"), ArgDescription("Name of app"), ArgRequired(PromptIfMissing = true)]
         public string Name { get; set; }
+
+        [ArgShortcut("--v3"), ArgDescription("Use the v3 api")]
+        public bool V3 { get; set; }
     }
 
     public class PushArgs
@@ -470,11 +624,21 @@ namespace cfcmd
         [ArgShortcut("--dir"), ArgShortcut("-d"), ArgDescription("Directory you want to push"), ArgRequired(IfNot = "Manifest")]
         public string Dir { get; set; }
 
+
         [ArgShortcut("--manifest"), ArgShortcut("-f"), ArgDescription("Path to manifest")]
         public string Manifest { get; set; }
 
         [ArgShortcut("--no-manifest"), ArgDescription("Ignore manifests if they exist.")]
         public bool NoManifest { get; set; }
+
+        [ArgShortcut("--v3"), ArgDescription("Use the v3 api")]
+        public bool V3 { get; set; }
+    }
+
+    public class AppsArgs
+    {
+        [ArgShortcut("--v3"), ArgDescription("Use the v3 api")]
+        public bool V3 { get; set; }
     }
 
     class Program
