@@ -26,6 +26,7 @@
     <LibrarySourceFolder>$(LibraryRoot)\src</LibrarySourceFolder>
     <SamplesSolution>cf-dotnet-sdk-samples.sln</SamplesSolution>
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <NugetRepo>https://www.nuget.org/api/v2/</NugetRepo>
   </PropertyGroup>
 
   <PropertyGroup>
@@ -65,7 +66,7 @@
 
   <!-- Target for restoring nuget packages -->
   <Target Name="RestoreNugetPackages">
-    <Exec Command="$(NuGetCommand) restore $(SamplesSolution)"/>
+    <Exec Command="$(NuGetCommand) restore $(SamplesSolution) -source $(NugetRepo)"/>
   </Target>
 
   <!-- Target for automatically versioning the assemblies -->
